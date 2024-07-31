@@ -1,0 +1,7 @@
+arc_jumpstart_levelup
+azure_arc
+*.zip
+*.log
+misc
+vagrant/ubuntu/.vagrant/
+vagrant/ubuntu/extracted_logs
