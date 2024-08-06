@@ -34,7 +34,7 @@ az login # login to your azure account
 
 $prefix="cptdazarcv" # Replace with your prefix
 $subname="sub-myedge-03" # Replace with your subscription name
-$location = "germanywestcentral" # Replace with your preferred location
+$location = "westeurope" # Replace with your preferred location
 
 # Set subscriptions
 az account set --subscription $subname
@@ -72,6 +72,7 @@ echo $sppassword # show the password
 
 # Retrieve Service Principal Object ID.
 $spid=az ad sp list --display-name $prefix --query [0].id -o tsv
+$spAppId=az ad sp list --display-name $prefix --query [0].appId -o tsv
 # Verify SP assignments
 az role assignment list --all --assignee $spid --query "[].{role:roleDefinitionName, scope:scope}" -o table
 # Show AppId, aka ServicePrincipalId
@@ -101,7 +102,7 @@ You will need to replace the following values inside "azcmagent.connect.sh" with
 
 ~~~powershell
 # ServicePrincipalId;
-echo $spid
+echo $spAppId
 # ServicePrincipalClientSecret;
 echo $sppassword
 # subscriptionId=<YOUR-SUB-ID>;
@@ -124,6 +125,34 @@ vagrant ssh
 azcmagent show # Look for "Agent Status : Connected"
 azcmagent check # check the connectivity of the agent
 ls -ll /opt/azcmagent/bin/azcmagent # see the agent installation
+~~~
+
+### Which user rights does the arc agent have on ubuntu?
+
+~~~bash
+ps aux | grep azcmagent
+groups himds
+cat /etc/passwd | grep himds
+~~~
+
+The output himds:x:999:999::/home/himds:/bin/false can be broken down into the following fields:
+
+- Username (himds): This is the name of the user account.
+- Password (x): This field typically contains an x, indicating that the encrypted password is stored in the /etc/shadow file, which is more secure.
+- User ID (UID) (999): This is the unique identifier for the user. The UID 999 is typically reserved for system users.
+- Group ID (GID) (999): This is the unique identifier for the user's primary group. The GID 999 indicates that the user belongs to a system group.
+- User Info (::): This field is usually used for storing additional information about the user, such as their full name or contact details. In this case, it is empty.
+- Home Directory (/home/himds): This is the path to the user's home directory. For the user himds, it is /home/himds.
+- Shell (/bin/false): This is the path to the user's default shell. The value /bin/false indicates that the user does not have access to an interactive shell. This is often used for system or service accounts that do not require shell access.
+
+This output indicates that himds is a system user with no interactive shell access, likely used for running specific services or agents.
+
+~~~bash
+cat /etc/group | grep himds
+sudo cat /etc/sudoers | grep himds
+sudo ls /etc/sudoers.d/
+sudo grep himds /etc/sudoers.d/*
+himds
 ~~~
 
 ### Get Arc Logs
@@ -167,7 +196,8 @@ az connectedmachine extension create --name AADSSHLoginForLinux --machine-name $
 az connectedmachine extension list --machine-name $prefix -g $prefix -o table
 
 # SSH into the VM via Azure
-az ssh arc --subscription $subname --resource-group $prefix --name $prefix # NOTE: I needed to update the current Service Configuration to allow the SSH connection. 
+# ssh-keygen -R cptdazarcv # In case you have already connected to the VM via SSH and you want to remove the key from the known_hosts file.
+az ssh arc --subscription $subname --resource-group $prefix --name $prefix # NOTE: I needed to update the current Service Configuration to allow the SSH connection.
 sudo azcmagent show
 sudo azcmagent logs # collect logs and combine them in a zip file
 exit
@@ -184,7 +214,7 @@ Expand-Archive -Path .\azcmagent-logs-240731T1034-cptdazarcv.zip -DestinationPat
 cd ..\..\ # in case you did the vagrant exercise move back to the root folder
 # copy the relevant files from the local repo
 # cp -r .\azure_arc\azure_arc_servers_jumpstart\policies . # already done for you
-az deployment group create -g $prefix -f "policies\deploy.bicep" --parameters prefix=$prefix location=$location 
+az deployment group create -g $prefix -f "policies\deploy.bicep" --parameters prefix=$prefix location=$location
 # it will take a while till the policy is applied
 # Verify the policy with the scope of our resource group
 az policy state list --resource-group $prefix --query "[?policySetDefinitionId=='/providers/Microsoft.Authorization/policySetDefinitions/2b00397d-c309-49c4-aa5a-f0b2c5bc6321'].{policyDefinitionReferenceId:policyDefinitionReferenceId,policyDefinitionId:policyDefinitionId,timestamp:timestamp,complianceState:complianceState}" # Expect two "NonCompliant" entries.
@@ -193,11 +223,11 @@ az connectedmachine extension list --machine-name $prefix -g $prefix -o table # 
 # Revalidate the policy, this can take some time and should only be done if really needed during the demo.
 az policy state trigger-scan --resource-group $prefix
 # Get policy assignment Name
-$policyAssignmentId=az policy assignment list -g $prefix --query "[?displayName=='Enable Azure Monitor for Hybrid VMs with AMA'].id" -o tsv 
+$policyAssignmentId=az policy assignment list -g $prefix --query "[?displayName=='cptdazarcvama'].id" -o tsv
 # Run the az policy state list command and capture the output in an Array
-$policyStates = az policy state list --resource-group $prefix --query "[?policySetDefinitionId=='/providers/Microsoft.Authorization/policySetDefinitions/2b00397d-c309-49c4-aa5a-f0b2c5bc6321'].{policyAssignmentId:policyAssignmentId,policyDefinitionReferenceId:policyDefinitionReferenceId}" | ConvertFrom-Json
+$policyStates = az policy state list -g $prefix --query "[?policySetDefinitionId=='/providers/Microsoft.Authorization/policySetDefinitions/2b00397d-c309-49c4-aa5a-f0b2c5bc6321'].{policyAssignmentId:policyAssignmentId,policyDefinitionReferenceId:policyDefinitionReferenceId}" | ConvertFrom-Json
 # Create a remediation task for each policy which is part of the policy set and relevant.
-az policy remediation create -n "${prefix}-DCR" --policy-assignment $policyStates[0].policyAssignmentId --definition-reference-id $policyStates[0].policyDefinitionReferenceId -g $prefix --resource-discovery-mode ReEvaluateCompliance
+az policy remediation create -n "${prefix}-AMA-DCR" --policy-assignment $policyStates[0].policyAssignmentId --definition-reference-id $policyStates[0].policyDefinitionReferenceId -g $prefix --resource-discovery-mode ReEvaluateCompliance
 az policy remediation create -n "${prefix}-AMA" --policy-assignment $policyStates[0].policyAssignmentId --definition-reference-id $policyStates[1].policyDefinitionReferenceId -g $prefix --resource-discovery-mode ReEvaluateCompliance
 ~~~
 
@@ -215,7 +245,7 @@ Monitoring Remediation Task Status
 You can monitor the status of a remediation task using the Azure CLI:
 
 ~~~powershell
-az policy remediation show -g $prefix -n "${prefix}-DCR" -o table --query "{name:name,policyDefinitionReferenceId:policyDefinitionReferenceId,provisioningState:provisioningState}"
+az policy remediation show -g $prefix -n "${prefix}-AMA-DCR" -o table --query "{name:name,policyDefinitionReferenceId:policyDefinitionReferenceId,provisioningState:provisioningState}"
 az policy remediation show -g $prefix -n "${prefix}-AMA" -o table --query "{name:name,policyDefinitionReferenceId:policyDefinitionReferenceId,provisioningState:provisioningState}"
 ~~~
 
@@ -229,6 +259,69 @@ az connectedmachine extension list --machine-name $prefix -g $prefix -o table # 
 az policy state list --resource-group $prefix --query "[?policySetDefinitionId=='/providers/Microsoft.Authorization/policySetDefinitions/2b00397d-c309-49c4-aa5a-f0b2c5bc6321'].{policyDefinitionReferenceId:policyDefinitionReferenceId,policyDefinitionId:policyDefinitionId,timestamp:timestamp,complianceState:complianceState}" # Expect two "Compliant" entries.
 ~~~
 
+### Azure Arc and Change Tracking
+
+~~~powershell
+# show changes introduced by arc agent
+# SSH into the VM via Azure
+az ssh arc --subscription $subname --resource-group $prefix --name $prefix
+# List directory which contains the Azure Arc extension packages and their configuration files.
+ls /var/lib/waagent/
+# AMA Config files
+ls /etc/opt/microsoft/azuremonitoragent
+ls /etc/opt/microsoft/azuremonitoragent/amacoreagent/PA.json
+exit
+az deployment group create -g $prefix -f "changetracking\deploy.bicep" --parameters prefix=$prefix location=$location myObjectId=$currentUserObjectId
+
+# Get policy assignment Name
+az policy assignment show -g $prefix -n "3ac2c636-a54b-5e62-b0da-892dd4b49122" --query displayName -o tsv
+$policyAssignmentId=az policy assignment list -g $prefix --query "[?displayName=='cptdazarcvct'].id" -o tsv
+
+az policy state list --resource-group $prefix --query "[?complianceState=='NonCompliant'].{policyDefinitionReferenceId:policyDefinitionReferenceId,policyDefinitionId:policyDefinitionId,timestamp:timestamp,complianceState:complianceState}" # Expect two "NonCompliant" entries.
+
+az policy state list --resource-group $prefix --query "[?policySetDefinitionName=='53448c70-089b-4f52-8f38-89196d7f2de1'].{policyDefinitionReferenceId:policyDefinitionReferenceId,policyDefinitionId:policyDefinitionId,timestamp:timestamp,complianceState:complianceState}" # Expect two "NonCompliant" entries.
+
+$policyStates = az policy state list -g $prefix --query "[?policySetDefinitionName=='53448c70-089b-4f52-8f38-89196d7f2de1'].{policyAssignmentId:policyAssignmentId,policyDefinitionReferenceId:policyDefinitionReferenceId}" | ConvertFrom-Json
+
+# Create a remediation task for each policy which is part of the policy set and relevant.
+az policy remediation create -n "${prefix}-CT-AMA" --policy-assignment $policyStates[0].policyAssignmentId --definition-reference-id $policyStates[0].policyDefinitionReferenceId -g $prefix --resource-discovery-mode ReEvaluateCompliance
+
+az policy remediation create -n "${prefix}-CT" --policy-assignment $policyStates[0].policyAssignmentId --definition-reference-id $policyStates[1].policyDefinitionReferenceId -g $prefix --resource-discovery-mode ReEvaluateCompliance
+
+az policy remediation create -n "${prefix}-CT-DCR" --policy-assignment $policyStates[0].policyAssignmentId --definition-reference-id $policyStates[2].policyDefinitionReferenceId -g $prefix --resource-discovery-mode ReEvaluateCompliance
+
+
+az policy remediation show -g $prefix -n "${prefix}-CT" -o table --query "{name:name,policyDefinitionReferenceId:policyDefinitionReferenceId,provisioningState:provisioningState}"
+az policy remediation show -g $prefix -n "${prefix}-CT-AMA" -o table --query "{name:name,policyDefinitionReferenceId:policyDefinitionReferenceId,provisioningState:provisioningState}"
+az policy remediation show -g $prefix -n "${prefix}-CT-DCR" -o table --query "{name:name,policyDefinitionReferenceId:policyDefinitionReferenceId,provisioningState:provisioningState}"
+
+# Verify if extension is installed
+az connectedmachine extension list --machine-name $prefix -g $prefix -o table # AMA will not show up
+~~~
+
+
+
+### Azure Arc and Update Manager
+
+~~~powershell
+# get azure resource
+az resource show -g $prefix -n $prefix --resource-type Microsoft.HybridCompute/machines > arc.vm.json
+code arc.vm.json
+# show changes introduced by arc agent
+# SSH into the VM via Azure
+az ssh arc --subscription $subname --resource-group $prefix --name $prefix
+apt list --upgradable
+exit
+az deployment group create -g $prefix -f "updatemanager\deploy.checking.bicep" --parameters prefix=$prefix location=$location
+
+# List directory which contains the Azure Arc extension packages and their configuration files.
+ls /var/lib/waagent/
+# AMA Config files
+ls /etc/opt/microsoft/azuremonitoragent
+ls /etc/opt/microsoft/azuremonitoragent/amacoreagent/PA.json
+
+~~~
+
 ### Clean up
 
 ~~~powershell
@@ -240,15 +333,51 @@ $roleAssignmentArray=az role assignment list --assignee $policyAssignmentSP -g $
 foreach ($roleAssignment in $roleAssignmentArray) {
     az role assignment delete --ids $roleAssignment.id
 }
+
+$policyAssignmentSPCT=az policy assignment list -g $prefix --query "[?displayName=='${prefix}ct'].identity.principalId" -o tsv
+$roleAssignmentCTArray=az role assignment list --assignee $policyAssignmentSPCT -g $prefix --query "[].{id:id,assignee:principalId,role:roleDefinitionName}" | ConvertFrom-Json
+
+# Delete the role assignments in a for loop
+foreach ($roleAssignmentCT in $roleAssignmentCTArray) {
+    az role assignment delete --ids $roleAssignmentCT.id
+}
+
 az group delete --name $prefix --yes --no-wait
 vagrant box list
 vagrant box remove ubuntu/xenial64
 ~~~
 
+## Misc
 
-## github
+### AMA Debugging
 
-~~~ powershell
+By looking into the Change Tracking we did figure out that the AMA is not running. We had some issues with the local VM and it seems like AMA has been affected.
+
+Based on https://github.com/Azure/azure-linux-extensions/blob/master/AzureMonitorAgent/ama_tst/AMA-Troubleshooting-Tool.md
+
+~~~powershell
+# show current status of AMA agent
+az connectedmachine extension show -n AzureMonitorLinuxAgent --machine-name $prefix -g $prefix
+# az ssh arc --subscription $subname --resource-group $prefix --name $prefix
+vagrant ssh
+sudo su - # folder is owned by root
+systemctl status azuremonitoragent
+~~~
+
+Another way to check the status of the agent is to use the AMA Troubleshooting Tool.
+
+~~~bash
+cd /var/lib/waagent/Microsoft.Azure.Monitor.AzureMonitorLinuxAgent-1.31.1/ama_tst
+sudo sh ama_troubleshooter.sh
+sudo journalctl -u azuremonitoragent
+
+sudo ls /etc/opt/microsoft/azuremonitoragent/config-cache/configchunks/
+sudo cat /etc/opt/microsoft/azuremonitoragent/config-cache/configchunks/2871056244766261301.json
+~~~
+
+### github
+
+~~~powershell
 git init
 git status
 git add *
@@ -261,5 +390,5 @@ git add *
 git status
 
 git commit -m"initial commit"
-git push origin main 
+git push origin main
 ~~~
